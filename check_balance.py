@@ -1,5 +1,8 @@
-import requests
 import os
+import logging
+import requests
+from typing import Optional
+
 
 try:
     from dotenv import load_dotenv
@@ -8,50 +11,63 @@ except ImportError:
     pass
 
 
-def fetch_data():
-    ACCOUNT_NO = os.environ["ACCOUNT_NO"]
-    URL = "https://prepaid.desco.org.bd/api/unified/customer/getBalance"
-    params = {'accountNo': ACCOUNT_NO}
+logging.basicConfig(level=logging.INFO)
 
+
+class NotificationError(Exception):
+    pass
+
+
+def fetch_data(account_no: str) -> Optional[float]:
+    URL = "https://prepaid.desco.org.bd/api/unified/customer/getBalance"
+    params = {'accountNo': account_no}
     try:
-        res = requests.get(url=URL, params=params, verify=False)
+        res = requests.get(
+            url=URL,
+            params=params,
+            verify=False,
+            timeout=10)
+        res.raise_for_status()
         data = res.json()
         inner_data = data.get("data")
-        if inner_data is not None:
-            balance = inner_data.get("balance")
-            return balance
-        else:
-            return None
-    except Exception as err:
-        print(f"Could not fetch, {err}")
+        return inner_data.get("balance") if inner_data else None
+    except requests.RequestException as err:
+        logging.error(f"Could not fetch, {err}")
         return None
 
 
-def telegram_notify(balance):
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+def telegram_notify(balance: float, token: str, chat_id: str) -> tuple[bool, str]:
     if not token or not chat_id:
-        return False, "Telegram not configured (TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID)"
+        return False, "Telegram not configured"
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     try:
-        r = requests.post(url, json={
-                          "chat_id": chat_id, "text": f"The current desco balance is {balance}"}, timeout=20)
-        if r.ok:
-            return True, "Telegram sent"
-        return False, f"Telegram failed: HTTP {r.status_code} {r.text}"
-    except Exception as e:
+        res = requests.post(url, json={
+            "chat_id": chat_id, "text": f"The current desco balance is {balance}"}, timeout=20)
+        res.raise_for_status()
+        return True, "Telegram sent"
+    except requests.RequestException as e:
         return False, f"Telegram failed: {e}"
 
 
-def send_notification(balance):
-    res = telegram_notify(balance)
-    print(res)
+def send_notification(balance: float):
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    success, msg = telegram_notify(balance, token, chat_id)
+    logging.info(msg)
+
+    if not success:
+        raise NotificationError(msg)
 
 
 def main():
-    # balance = fetch_data()
-    balance = fetch_data()
+    account_no = os.environ.get("ACCOUNT_NO")
+    if not account_no:
+        logging.error("ACCOUNT_NO not set")
+        return
+    balance = fetch_data(account_no)
     if balance is not None:
+        msg = f"Current balance is {balance}"
+        logging.info(msg)
         send_notification(balance)
 
 
